@@ -1,6 +1,6 @@
 [package]
 name = "tokio-simplified"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Pierre Avital <pierre.avital+gitlab@gmail.com>"]
 edition = "2018"
 description = "A simplified API to interract with tokio sinks and streams"
