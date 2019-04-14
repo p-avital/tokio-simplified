@@ -1,0 +1,9 @@
+[package]
+name = "tokio-simplified"
+version = "0.1.0"
+authors = ["Pierre Avital <pierre.avital+gitlab@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.1.26"
+tokio = "0.1.18"
