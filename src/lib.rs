@@ -62,14 +62,20 @@
 /// ```
 extern crate tokio;
 
-use futures::future::Future;
-use futures::sink::Sink;
-use futures::sync::mpsc::channel;
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
-use tokio::codec::{Decoder, Encoder, Framed};
-use tokio::io::{AsyncWrite, AsyncRead};
-use tokio::prelude::stream::{SplitSink, SplitStream, Stream};
+use futures::{
+    sink::Sink,
+    future::Future,
+    sync::mpsc::channel,
+    stream::{SplitSink, SplitStream, Stream}
+};
+use std::{
+    cell::RefCell,
+    sync::{Arc, Mutex}
+};
+use tokio::{
+    codec::{Decoder, Encoder, Framed},
+    io::{AsyncWrite, AsyncRead},
+};
 
 /// A simple interface to interact with a tokio sink.
 ///
@@ -127,7 +133,7 @@ where
         stream: SplitStream<Framed<Io, Codec>>,
     ) -> Self
     where
-        Io: tokio::prelude::AsyncRead + tokio::prelude::AsyncWrite + std::marker::Send + 'static,
+        Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
     {
         Self::with_filter(
             sink,
@@ -155,7 +161,7 @@ where
         mut filter: Option<F>,
     ) -> Self
     where
-        Io: tokio::prelude::AsyncWrite + tokio::prelude::AsyncRead + std::marker::Send + 'static,
+        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
         F: FnMut(<Codec as Decoder>::Item, &AsyncWriter<Codec>) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
