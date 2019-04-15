@@ -62,11 +62,14 @@
 /// ```
 extern crate tokio;
 
+use futures::future::Future;
+use futures::sink::Sink;
 use futures::sync::mpsc::channel;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use tokio::codec::{Decoder, Encoder, Framed};
-use tokio::prelude::*;
+use tokio::io::{AsyncWrite, AsyncRead};
+use tokio::prelude::stream::{SplitSink, SplitStream, Stream};
 
 /// A simple interface to interact with a tokio sink.
 ///
@@ -120,8 +123,8 @@ where
     /// You can provide a filter to run on each frame before sending said frames to callbacks.
     /// To provide a filter, use `with_filter(sink, stream, Some(Callback))`.
     pub fn new<Io>(
-        sink: stream::SplitSink<Framed<Io, Codec>>,
-        stream: stream::SplitStream<Framed<Io, Codec>>,
+        sink: SplitSink<Framed<Io, Codec>>,
+        stream: SplitStream<Framed<Io, Codec>>,
     ) -> Self
     where
         Io: tokio::prelude::AsyncRead + tokio::prelude::AsyncWrite + std::marker::Send + 'static,
@@ -147,8 +150,8 @@ where
     /// using `filter=Some(callback)` with a callback that always returns `None` will save you the cost of the multiple
     /// callbacks handling provided by the `subscibe(callback)` API
     pub fn with_filter<Io, F>(
-        sink: stream::SplitSink<Framed<Io, Codec>>,
-        stream: stream::SplitStream<Framed<Io, Codec>>,
+        sink: SplitSink<Framed<Io, Codec>>,
+        stream: SplitStream<Framed<Io, Codec>>,
         mut filter: Option<F>,
     ) -> Self
     where
