@@ -124,7 +124,7 @@ where
         stream: stream::SplitStream<Framed<Io, Codec>>,
     ) -> Self
     where
-        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
+        Io: tokio::prelude::AsyncRead + tokio::prelude::AsyncWrite + std::marker::Send + 'static,
     {
         Self::with_filter(
             sink,
@@ -152,7 +152,7 @@ where
         mut filter: Option<F>,
     ) -> Self
     where
-        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
+        Io: tokio::prelude::AsyncWrite + tokio::prelude::AsyncRead + std::marker::Send + 'static,
         F: FnMut(<Codec as Decoder>::Item, &AsyncWriter<Codec>) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
