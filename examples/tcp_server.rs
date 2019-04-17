@@ -9,7 +9,7 @@ use futures::Stream;
 use tokio::codec::{Decoder, Encoder};
 use tokio::net::{TcpListener, TcpStream};
 
-use tokio_simplified::{AsyncWriter, AsyncReadWriter};
+use tokio_simplified::{AsyncReadWriter};
 
 struct LineCodec;
 
@@ -44,13 +44,13 @@ impl Encoder for LineCodec {
 fn process_socket(socket: TcpStream) {
     println!("New Client");
     let (sink, stream) = LineCodec.framed(socket).split();
-    let trx = AsyncReadWriter::with_filter(sink, stream, Some(|frame: String, writer: &AsyncWriter<LineCodec>| {
+    let trx = AsyncReadWriter::with_filter(sink, stream, |frame, writer| {
         if frame.to_lowercase().contains("hello there") {
             writer.write("General Kenobi!".into());
             return None;
         }
         Some(frame)
-    }));
+    });
 
     let writer = trx.get_writer();
     trx.on_receive(move |frame| {

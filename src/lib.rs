@@ -1,19 +1,18 @@
-
 extern crate tokio;
 
 use futures::{
-    sink::Sink,
     future::Future,
+    sink::Sink,
+    stream::{SplitSink, SplitStream, Stream},
     sync::mpsc::channel,
-    stream::{SplitSink, SplitStream, Stream}
 };
 use std::{
     cell::RefCell,
-    sync::{Arc, Mutex}
+    sync::{Arc, Mutex},
 };
 use tokio::{
     codec::{Decoder, Encoder, Framed},
-    io::{AsyncWrite, AsyncRead},
+    io::{AsyncRead, AsyncWrite},
 };
 
 /// A simple interface to interact with a tokio sink.
@@ -63,10 +62,10 @@ where
 {
     /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
     ///
-    /// Builds a new AsyncReadWriter from the provided sink and stream with no filter.
+    /// Builds a new `AsyncReadWriter` from the provided `sink` and `stream` with no filter.
     ///
-    /// You can provide a filter to run on each frame before sending said frames to callbacks.
-    /// To provide a filter, use `with_filter(sink, stream, Some(Callback))`.
+    /// You can provide a filter to run on each `frame` before sending said frames to callbacks.
+    /// To provide a filter, use `with_filter(sink, stream, callback)`.
     pub fn new<Io>(
         sink: SplitSink<Framed<Io, Codec>>,
         stream: SplitStream<Framed<Io, Codec>>,
@@ -74,7 +73,7 @@ where
     where
         Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
     {
-        Self::with_filter(
+        Self::constructor(
             sink,
             stream,
             None::<
@@ -92,9 +91,23 @@ where
     /// You can provide a filter to run on each frame before sending said frames to callbacks.
     ///
     /// Callbacks will not be called if the filter returned None, so if you intend on only having a single callback,
-    /// using `filter=Some(callback)` with a callback that always returns `None` will save you the cost of the multiple
+    /// using `filter=callback` with a callback that always returns `None` will save you the cost of the multiple
     /// callbacks handling provided by the `subscibe(callback)` API
     pub fn with_filter<Io, F>(
+        sink: SplitSink<Framed<Io, Codec>>,
+        stream: SplitStream<Framed<Io, Codec>>,
+        filter: F,
+    ) -> Self
+    where
+        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
+        F: FnMut(<Codec as Decoder>::Item, &AsyncWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+            + std::marker::Send
+            + 'static,
+    {
+        Self::constructor(sink, stream, Some(filter))
+    }
+
+    fn constructor<Io, F>(
         sink: SplitSink<Framed<Io, Codec>>,
         stream: SplitStream<Framed<Io, Codec>>,
         mut filter: Option<F>,
@@ -145,9 +158,9 @@ where
         }
     }
 
-    /// deprecated: use on_receive() instead, unless you NEED an mpsc::Sender to be notified.
+    /// deprecated: use `on_receive()` instead, unless you NEED an `mpsc::Sender` to be notified.
     ///
-    /// subscriber will receive any data polled from the internal stream.
+    /// `subscriber` will receive any data polled from the internal stream.
     pub fn subscribe_mpsc_sender(
         &self,
         subscriber: futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
@@ -155,8 +168,7 @@ where
         self.subscribers.lock().unwrap().push(subscriber);
     }
 
-
-    /// callback will be called for each frame polled from the internal stream.
+    /// `callback` will be called for each `frame` polled from the internal stream.
     pub fn on_receive<F>(&self, callback: F)
     where
         F: FnMut(<Codec as Decoder>::Item) -> Result<(), ()> + std::marker::Send + 'static,
@@ -171,11 +183,10 @@ where
         self.subscribe_mpsc_sender(tx);
     }
 
-    /// Returns an AsyncWriter that will forward data to the associated tokio sink.
+    /// Returns an `AsyncWriter` that will forward data to the associated tokio sink.
     pub fn get_writer(&self) -> AsyncWriter<Codec> {
         AsyncWriter {
             tx: RefCell::new(self.tx.clone()),
         }
     }
 }
-
