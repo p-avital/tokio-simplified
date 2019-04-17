@@ -17,19 +17,20 @@ use tokio::{
 
 /// A simple interface to interact with a tokio sink.
 ///
-/// Should always be constructed by a call to some AsyncReadWriter's get_writer().
-pub struct AsyncWriter<Codec>
+/// Should always be constructed by a call to some IoManager's get_writer().
+#[derive(Clone)]
+pub struct IoWriter<Codec>
 where
     Codec: Encoder,
 {
     tx: RefCell<futures::sync::mpsc::Sender<<Codec as Encoder>::Item>>,
 }
 
-impl<Codec> AsyncWriter<Codec>
+impl<Codec> IoWriter<Codec>
 where
     Codec: Encoder,
 {
-    /// Forwards the frame to the tokio sink associated with the AsyncReadWriter that build this instance.
+    /// Forwards the frame to the tokio sink associated with the IoManager that build this instance.
     pub fn write(
         &self,
         frame: <Codec as Encoder>::Item,
@@ -44,7 +45,7 @@ where
 /// A simplified interface to interact with tokio's streams and sinks.
 ///
 /// Allows easy subscription to the stream's frames, and easy sending to the sink.
-pub struct AsyncReadWriter<Codec>
+pub struct IoManager<Codec>
 where
     Codec: Encoder + Decoder,
 {
@@ -52,7 +53,7 @@ where
     subscribers: Arc<Mutex<Vec<futures::sync::mpsc::Sender<<Codec as Decoder>::Item>>>>,
 }
 
-impl<Codec> AsyncReadWriter<Codec>
+impl<Codec> IoManager<Codec>
 where
     Codec: Decoder + Encoder + std::marker::Send + 'static,
     <Codec as Encoder>::Item: std::marker::Send,
@@ -62,7 +63,7 @@ where
 {
     /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
     ///
-    /// Builds a new `AsyncReadWriter` from the provided `sink` and `stream` with no filter.
+    /// Builds a new `IoManager` from the provided `sink` and `stream` with no filter.
     ///
     /// You can provide a filter to run on each `frame` before sending said frames to callbacks.
     /// To provide a filter, use `with_filter(sink, stream, callback)`.
@@ -79,7 +80,7 @@ where
             None::<
                 (fn(
                     <Codec as Decoder>::Item,
-                    &AsyncWriter<Codec>,
+                    &IoWriter<Codec>,
                 ) -> Option<<Codec as Decoder>::Item>),
             >,
         )
@@ -87,7 +88,7 @@ where
 
     /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
     ///
-    /// Builds a new AsyncReadWriter from the provided sink and stream.
+    /// Builds a new IoManager from the provided sink and stream.
     /// You can provide a filter to run on each frame before sending said frames to callbacks.
     ///
     /// Callbacks will not be called if the filter returned None, so if you intend on only having a single callback,
@@ -100,7 +101,7 @@ where
     ) -> Self
     where
         Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: FnMut(<Codec as Decoder>::Item, &AsyncWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+        F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
     {
@@ -114,14 +115,14 @@ where
     ) -> Self
     where
         Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: FnMut(<Codec as Decoder>::Item, &AsyncWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+        F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
     {
         let (sink_tx, sink_rx) = channel::<<Codec as Encoder>::Item>(10);
         let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
         tokio::spawn(sink_task);
-        let filter_writer = AsyncWriter {
+        let filter_writer = IoWriter {
             tx: RefCell::new(sink_tx.clone()),
         };
 
@@ -152,7 +153,7 @@ where
             })
             .map_err(|_| ());
         tokio::spawn(stream_task);
-        AsyncReadWriter {
+        IoManager {
             tx: sink_tx,
             subscribers,
         }
@@ -183,10 +184,22 @@ where
         self.subscribe_mpsc_sender(tx);
     }
 
-    /// Returns an `AsyncWriter` that will forward data to the associated tokio sink.
-    pub fn get_writer(&self) -> AsyncWriter<Codec> {
-        AsyncWriter {
+    /// Returns an `IoWriter` that will forward data to the associated tokio sink.
+    pub fn get_writer(&self) -> IoWriter<Codec> {
+        IoWriter {
             tx: RefCell::new(self.tx.clone()),
         }
     }
+}
+
+/// Inspired by bkwilliams, these aliases will probably stay, but you shouldn't rely too much on them
+pub mod silly_aliases {
+    pub type DoWhenever<T> = crate::IoManager<T>;
+    pub type PushWhenever<T> = crate::IoWriter<T>;
+}
+
+/// DEPRECATED: These aliases will be discarded whenever an actual API change happens
+pub mod legacy_aliases {
+    pub type AsyncReadWriter<T> = crate::IoManager<T>;
+    pub type AsyncWriter<T> = crate::IoWriter<T>;
 }

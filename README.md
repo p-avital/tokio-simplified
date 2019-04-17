@@ -13,7 +13,7 @@ This API should only be used from inside a Tokio Runtime: it will try to spawn T
 ```rust
 fn tokio_main() {
     let (sink, stream) = LineCodec.framed(tcp_stream).split();
-    let io = AsyncReadWriter::new(sink, stream);
+    let io = IoManager::new(sink, stream);
     let writer = io.get_writer();
     io.subscribe(move |frame| {
         writer.write(frame);
@@ -29,7 +29,7 @@ You can use filters to have your callbacks only be called when the frame matches
 ```rust
 fn tokio_main() {
     let (sink, stream) = LineCodec.framed(tcp_stream).split();
-    let io = AsyncReadWriter::with_filter(sink, stream, |frame, writer| {
+    let io = IoManager::with_filter(sink, stream, |frame, writer| {
         if frame.to_ascii_lowercase().contains("hello there") {
             writer.write("General Kenobi!");
             return None;
@@ -47,14 +47,14 @@ fn tokio_main() {
 ```
 
 ### Single Callback Tip
-Every time you use `subscribe(callback)`, you endure the cost of one more futures::sync::mpsc::channel,
-and of one frame.clone() per callback call.
+Every time you use `subscribe(callback)`, you endure the cost of one more `futures::sync::mpsc::channel`,
+and of one `frame.clone()` per callback call.
 It's not a high cost, but if you only have one callback, you can cut these costs by passing your callback
 as a filter that always returns `None`.
 ```rust
 fn tokio_main() {
     let (sink, stream) = LineCodec.framed(tcp_stream).split();
-    let io = AsyncReadWriter::with_filter(sink, stream, |frame, writer| {
+    let io = IoManager::with_filter(sink, stream, |frame, writer| {
         writer.write(frame);
         None
     });
