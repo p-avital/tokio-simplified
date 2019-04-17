@@ -1,11 +1,12 @@
 [package]
 name = "tokio-simplified"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["Pierre Avital <pierre.avital+gitlab@gmail.com>"]
 edition = "2018"
 description = "A simplified API to interract with tokio sinks and streams"
 license = "Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/CptFox/tokio-simplified"
 
 [dependencies]
 futures = "0.1.26"

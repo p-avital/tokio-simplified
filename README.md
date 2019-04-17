@@ -13,7 +13,7 @@ This API should only be used from inside a Tokio Runtime: it will try to spawn T
 ```rust
 fn tokio_main() {
     let (sink, stream) = LineCodec.framed(tcp_stream).split();
-    let io = AsyncReadWriter(sink, stream, None);
+    let io = AsyncReadWriter::new(sink, stream);
     let writer = io.get_writer();
     io.subscribe(move |frame| {
         writer.write(frame);
@@ -29,7 +29,7 @@ You can use filters to have your callbacks only be called when the frame matches
 ```rust
 fn tokio_main() {
     let (sink, stream) = LineCodec.framed(tcp_stream).split();
-    let io = AsyncReadWriter(sink, stream, Some(|frame, writer| {
+    let io = AsyncReadWriter::with_filter(sink, stream, Some(|frame: String, writer: &AsyncWriter<LineCodec>| {
         if frame.to_ascii_lowercase().contains("hello there") {
             writer.write("General Kenobi!");
             return None;
@@ -54,7 +54,7 @@ as a filter that always returns `None`.
 ```rust
 fn tokio_main() {
     let (sink, stream) = LineCodec.framed(tcp_stream).split();
-    let io = AsyncReadWriter(sink, stream, Some(|frame, writer| {
+    let io = AsyncReadWriter::with_filter(sink, stream, Some(|frame: String, writer: &AsyncWriter<LineCodec>| {
         writer.write(frame);
         None
     }));
