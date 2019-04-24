@@ -55,10 +55,8 @@ fn process_socket(socket: TcpStream) {
     let mut writer = trx.get_writer();
     trx.on_receive(move |frame| {
         println!("Got frame: {}", frame);
-        match writer.write("Hi there".into()) {
-            Ok(_result) => Ok(()),
-            Err(_error) => Err(()),
-        }
+        writer.write("Hi there".into());
+        Ok(())
     });
 }
 

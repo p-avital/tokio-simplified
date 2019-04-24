@@ -43,11 +43,11 @@ where
     pub fn write(
         &mut self,
         frame: <Codec as Encoder>::Item,
-    ) -> Result<
-        futures::AsyncSink<<Codec as Encoder>::Item>,
-        futures::sync::mpsc::SendError<<Codec as Encoder>::Item>,
-    > {
-        self.tx.start_send(frame)
+    ) -> futures::sink::Send<futures::sync::mpsc::Sender<<Codec as Encoder>::Item>> {
+        // self.tx.start_send(frame)
+        let mut future = self.tx.clone().send(frame);
+        future.poll();
+        future
     }
 }
 
