@@ -1,46 +1,43 @@
 extern crate tokio;
 
+use futures::sync::mpsc::Sender;
 use futures::{
     future::Future,
     sink::Sink,
     stream::{SplitSink, SplitStream, Stream},
     sync::mpsc::channel,
 };
-use std::{
-    cell::RefCell,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::{
     codec::{Decoder, Encoder, Framed},
     io::{AsyncRead, AsyncWrite},
 };
-use std::collections::HashMap;
-use futures::sync::mpsc::Sender;
 
 /// A simple interface to interact with a tokio sink.
 ///
 /// Should always be constructed by a call to some IoManager's get_writer().
 #[derive(Clone)]
 pub struct IoWriter<Codec>
-    where
-        Codec: Encoder,
+where
+    Codec: Encoder,
 {
-    tx: RefCell<futures::sync::mpsc::Sender<<Codec as Encoder>::Item>>,
+    tx: futures::sync::mpsc::Sender<<Codec as Encoder>::Item>,
 }
 
 impl<Codec> IoWriter<Codec>
-    where
-        Codec: Encoder,
+where
+    Codec: Encoder,
 {
     /// Forwards the frame to the tokio sink associated with the IoManager that build this instance.
     pub fn write(
-        &self,
+        &mut self,
         frame: <Codec as Encoder>::Item,
     ) -> Result<
         futures::AsyncSink<<Codec as Encoder>::Item>,
         futures::sync::mpsc::SendError<<Codec as Encoder>::Item>,
     > {
-        self.tx.borrow_mut().start_send(frame)
+        self.tx.start_send(frame)
     }
 }
 
@@ -48,8 +45,8 @@ impl<Codec> IoWriter<Codec>
 ///
 /// Allows easy subscription to the stream's frames, and easy sending to the sink.
 pub struct IoManager<Codec>
-    where
-        Codec: Encoder + Decoder,
+where
+    Codec: Encoder + Decoder,
 {
     tx: futures::sync::mpsc::Sender<<Codec as Encoder>::Item>,
     subscribers: Arc<Mutex<HashMap<u32, futures::sync::mpsc::Sender<<Codec as Decoder>::Item>>>>,
@@ -57,12 +54,12 @@ pub struct IoManager<Codec>
 }
 
 impl<Codec> IoManager<Codec>
-    where
-        Codec: Decoder + Encoder + std::marker::Send + 'static,
-        <Codec as Encoder>::Item: std::marker::Send,
-        <Codec as Encoder>::Error: std::marker::Send,
-        <Codec as Decoder>::Item: std::marker::Send + Clone,
-        <Codec as Decoder>::Error: std::marker::Send,
+where
+    Codec: Decoder + Encoder + std::marker::Send + 'static,
+    <Codec as Encoder>::Item: std::marker::Send,
+    <Codec as Encoder>::Error: std::marker::Send,
+    <Codec as Decoder>::Item: std::marker::Send + Clone,
+    <Codec as Decoder>::Error: std::marker::Send,
 {
     /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
     ///
@@ -74,8 +71,8 @@ impl<Codec> IoManager<Codec>
         sink: SplitSink<Framed<Io, Codec>>,
         stream: SplitStream<Framed<Io, Codec>>,
     ) -> Self
-        where
-            Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
+    where
+        Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
     {
         Self::constructor(
             sink,
@@ -83,7 +80,7 @@ impl<Codec> IoManager<Codec>
             None::<
                 (fn(
                     <Codec as Decoder>::Item,
-                    &IoWriter<Codec>,
+                    &mut IoWriter<Codec>,
                 ) -> Option<<Codec as Decoder>::Item>),
             >,
         )
@@ -102,9 +99,12 @@ impl<Codec> IoManager<Codec>
         stream: SplitStream<Framed<Io, Codec>>,
         filter: F,
     ) -> Self
-        where
-            Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-            F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+    where
+        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
+        F: FnMut(
+                <Codec as Decoder>::Item,
+                &mut IoWriter<Codec>,
+            ) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
     {
@@ -116,20 +116,24 @@ impl<Codec> IoManager<Codec>
         stream: SplitStream<Framed<Io, Codec>>,
         mut filter: Option<F>,
     ) -> Self
-        where
-            Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-            F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+    where
+        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
+        F: FnMut(
+                <Codec as Decoder>::Item,
+                &mut IoWriter<Codec>,
+            ) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
     {
         let (sink_tx, sink_rx) = channel::<<Codec as Encoder>::Item>(10);
         let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
         tokio::spawn(sink_task);
-        let filter_writer = IoWriter {
-            tx: RefCell::new(sink_tx.clone()),
+        let mut filter_writer = IoWriter {
+            tx: sink_tx.clone(),
         };
 
-        let subscribers = Arc::new(Mutex::new(HashMap::<u32,
+        let subscribers = Arc::new(Mutex::new(HashMap::<
+            u32,
             futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
         >::new()));
         let stream_subscribers_reference = subscribers.clone();
@@ -137,11 +141,12 @@ impl<Codec> IoManager<Codec>
             .for_each(move |frame: <Codec as Decoder>::Item| {
                 let frame = match &mut filter {
                     None => Some(frame),
-                    Some(function) => function(frame, &filter_writer),
+                    Some(function) => function(frame, &mut filter_writer),
                 };
                 match frame {
                     Some(frame) => {
-                        for (_handle, tx) in stream_subscribers_reference.lock().unwrap().iter_mut() {
+                        for (_handle, tx) in stream_subscribers_reference.lock().unwrap().iter_mut()
+                        {
                             match tx.start_send(frame.clone()) {
                                 Ok(_) => {}
                                 Err(error) => {
@@ -180,9 +185,9 @@ impl<Codec> IoManager<Codec>
 
     /// `callback` will be called for each `frame` polled from the internal stream.
     pub fn on_receive<F>(&self, callback: F) -> u32
-        where
-            F: FnMut(<Codec as Decoder>::Item) -> Result<(), ()> + std::marker::Send + 'static,
-            <Codec as Decoder>::Item: std::marker::Send + 'static,
+    where
+        F: FnMut(<Codec as Decoder>::Item) -> Result<(), ()> + std::marker::Send + 'static,
+        <Codec as Decoder>::Item: std::marker::Send + 'static,
     {
         let (tx, rx): (
             futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
@@ -205,7 +210,7 @@ impl<Codec> IoManager<Codec>
     /// Returns an `IoWriter` that will forward data to the associated tokio sink.
     pub fn get_writer(&self) -> IoWriter<Codec> {
         IoWriter {
-            tx: RefCell::new(self.tx.clone()),
+            tx: self.tx.clone(),
         }
     }
 }

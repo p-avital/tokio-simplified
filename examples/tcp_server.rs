@@ -1,15 +1,15 @@
-extern crate tokio;
 extern crate bytes;
 extern crate futures;
+extern crate tokio;
 extern crate tokio_simplified;
 
 use bytes::BytesMut;
-use std::net::{IpAddr, Ipv4Addr};
 use futures::Stream;
+use std::net::{IpAddr, Ipv4Addr};
 use tokio::codec::{Decoder, Encoder};
 use tokio::net::{TcpListener, TcpStream};
 
-use tokio_simplified::{IoManager};
+use tokio_simplified::IoManager;
 
 struct LineCodec;
 
@@ -52,12 +52,12 @@ fn process_socket(socket: TcpStream) {
         Some(frame)
     });
 
-    let writer = trx.get_writer();
+    let mut writer = trx.get_writer();
     trx.on_receive(move |frame| {
         println!("Got frame: {}", frame);
         match writer.write("Hi there".into()) {
             Ok(_result) => Ok(()),
-            Err(_error) => Err(())
+            Err(_error) => Err(()),
         }
     });
 }
