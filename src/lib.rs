@@ -14,21 +14,23 @@ use tokio::{
     codec::{Decoder, Encoder, Framed},
     io::{AsyncRead, AsyncWrite},
 };
+use std::collections::HashMap;
+use futures::sync::mpsc::Sender;
 
 /// A simple interface to interact with a tokio sink.
 ///
 /// Should always be constructed by a call to some IoManager's get_writer().
 #[derive(Clone)]
 pub struct IoWriter<Codec>
-where
-    Codec: Encoder,
+    where
+        Codec: Encoder,
 {
     tx: RefCell<futures::sync::mpsc::Sender<<Codec as Encoder>::Item>>,
 }
 
 impl<Codec> IoWriter<Codec>
-where
-    Codec: Encoder,
+    where
+        Codec: Encoder,
 {
     /// Forwards the frame to the tokio sink associated with the IoManager that build this instance.
     pub fn write(
@@ -46,20 +48,21 @@ where
 ///
 /// Allows easy subscription to the stream's frames, and easy sending to the sink.
 pub struct IoManager<Codec>
-where
-    Codec: Encoder + Decoder,
+    where
+        Codec: Encoder + Decoder,
 {
     tx: futures::sync::mpsc::Sender<<Codec as Encoder>::Item>,
-    subscribers: Arc<Mutex<Vec<futures::sync::mpsc::Sender<<Codec as Decoder>::Item>>>>,
+    subscribers: Arc<Mutex<HashMap<u32, futures::sync::mpsc::Sender<<Codec as Decoder>::Item>>>>,
+    next_handle: Mutex<u32>,
 }
 
 impl<Codec> IoManager<Codec>
-where
-    Codec: Decoder + Encoder + std::marker::Send + 'static,
-    <Codec as Encoder>::Item: std::marker::Send,
-    <Codec as Encoder>::Error: std::marker::Send,
-    <Codec as Decoder>::Item: std::marker::Send + Clone,
-    <Codec as Decoder>::Error: std::marker::Send,
+    where
+        Codec: Decoder + Encoder + std::marker::Send + 'static,
+        <Codec as Encoder>::Item: std::marker::Send,
+        <Codec as Encoder>::Error: std::marker::Send,
+        <Codec as Decoder>::Item: std::marker::Send + Clone,
+        <Codec as Decoder>::Error: std::marker::Send,
 {
     /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
     ///
@@ -71,8 +74,8 @@ where
         sink: SplitSink<Framed<Io, Codec>>,
         stream: SplitStream<Framed<Io, Codec>>,
     ) -> Self
-    where
-        Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
+        where
+            Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
     {
         Self::constructor(
             sink,
@@ -99,9 +102,9 @@ where
         stream: SplitStream<Framed<Io, Codec>>,
         filter: F,
     ) -> Self
-    where
-        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+        where
+            Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
+            F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
     {
@@ -113,9 +116,9 @@ where
         stream: SplitStream<Framed<Io, Codec>>,
         mut filter: Option<F>,
     ) -> Self
-    where
-        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+        where
+            Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
+            F: FnMut(<Codec as Decoder>::Item, &IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
     {
@@ -126,7 +129,7 @@ where
             tx: RefCell::new(sink_tx.clone()),
         };
 
-        let subscribers = Arc::new(Mutex::new(Vec::<
+        let subscribers = Arc::new(Mutex::new(HashMap::<u32,
             futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
         >::new()));
         let stream_subscribers_reference = subscribers.clone();
@@ -138,7 +141,7 @@ where
                 };
                 match frame {
                     Some(frame) => {
-                        for tx in stream_subscribers_reference.lock().unwrap().iter_mut() {
+                        for (_handle, tx) in stream_subscribers_reference.lock().unwrap().iter_mut() {
                             match tx.start_send(frame.clone()) {
                                 Ok(_) => {}
                                 Err(error) => {
@@ -156,6 +159,7 @@ where
         IoManager {
             tx: sink_tx,
             subscribers,
+            next_handle: Mutex::new(0),
         }
     }
 
@@ -165,15 +169,20 @@ where
     pub fn subscribe_mpsc_sender(
         &self,
         subscriber: futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
-    ) {
-        self.subscribers.lock().unwrap().push(subscriber);
+    ) -> u32 {
+        let mut map = self.subscribers.lock().unwrap();
+        let mut handle_guard = self.next_handle.lock().unwrap();
+        let handle = handle_guard.clone();
+        *handle_guard += 1;
+        map.insert(handle.clone(), subscriber);
+        handle
     }
 
     /// `callback` will be called for each `frame` polled from the internal stream.
-    pub fn on_receive<F>(&self, callback: F)
-    where
-        F: FnMut(<Codec as Decoder>::Item) -> Result<(), ()> + std::marker::Send + 'static,
-        <Codec as Decoder>::Item: std::marker::Send + 'static,
+    pub fn on_receive<F>(&self, callback: F) -> u32
+        where
+            F: FnMut(<Codec as Decoder>::Item) -> Result<(), ()> + std::marker::Send + 'static,
+            <Codec as Decoder>::Item: std::marker::Send + 'static,
     {
         let (tx, rx): (
             futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
@@ -181,7 +190,16 @@ where
         ) = channel::<<Codec as Decoder>::Item>(10);
         let on_frame = rx.for_each(callback).map(|_| ());
         tokio::spawn(on_frame);
-        self.subscribe_mpsc_sender(tx);
+        self.subscribe_mpsc_sender(tx)
+    }
+
+    /// Removes the callback with `key`handle. `key` should be a value returned by either
+    /// `on_receive()` or `subscribe_mpsc_sender()`.
+    ///
+    /// Returns the `mpsc::Sender` that used to be notified upon new frames, just in case.
+    pub fn extract_callback(&self, key: u32) -> Option<Sender<<Codec as Decoder>::Item>> {
+        let mut map = self.subscribers.lock().unwrap();
+        map.remove(&key)
     }
 
     /// Returns an `IoWriter` that will forward data to the associated tokio sink.
