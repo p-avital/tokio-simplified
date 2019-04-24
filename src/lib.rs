@@ -17,12 +17,22 @@ use tokio::{
 /// A simple interface to interact with a tokio sink.
 ///
 /// Should always be constructed by a call to some IoManager's get_writer().
-#[derive(Clone)]
 pub struct IoWriter<Codec>
 where
     Codec: Encoder,
 {
     tx: futures::sync::mpsc::Sender<<Codec as Encoder>::Item>,
+}
+
+impl<Codec> Clone for IoWriter<Codec>
+where
+    Codec: Encoder,
+{
+    fn clone(&self) -> Self {
+        IoWriter {
+            tx: self.tx.clone(),
+        }
+    }
 }
 
 impl<Codec> IoWriter<Codec>
