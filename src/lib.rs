@@ -51,6 +51,77 @@ where
     }
 }
 
+pub struct IoManagerBuilder<Codec, Io>
+where
+    Codec: Decoder + Encoder + std::marker::Send + 'static,
+    <Codec as Encoder>::Item: std::marker::Send,
+    <Codec as Encoder>::Error: std::marker::Send,
+    <Codec as Decoder>::Item: std::marker::Send + Clone,
+    <Codec as Decoder>::Error: std::marker::Send,
+    Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
+    // Filter:
+    //     FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+    //         + std::marker::Send
+    //         + 'static,
+    // ErrorHandler: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
+{
+    sink: SplitSink<Framed<Io, Codec>>,
+    stream: SplitStream<Framed<Io, Codec>>,
+    filter: Option<
+        Box<
+            dyn FnMut(
+                <Codec as Decoder>::Item,
+                &mut IoWriter<Codec>,
+            ) -> Option<<Codec as Decoder>::Item>,
+        >,
+    >,
+    error_handler: Option<Box<dyn FnMut(<Codec as Decoder>::Error)>>,
+}
+
+impl<Codec, Io> IoManagerBuilder<Codec, Io>
+where
+    Codec: Decoder + Encoder + std::marker::Send + 'static,
+    <Codec as Encoder>::Item: std::marker::Send,
+    <Codec as Encoder>::Error: std::marker::Send,
+    <Codec as Decoder>::Item: std::marker::Send + Clone,
+    <Codec as Decoder>::Error: std::marker::Send,
+    Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
+{
+    pub fn new(sink: SplitSink<Framed<Io, Codec>>, stream: SplitStream<Framed<Io, Codec>>) -> Self {
+        Self {
+            sink,
+            stream,
+            filter: None,
+            error_handler: None,
+        }
+    }
+
+    pub fn with_filter<Filter>(mut self, filter: Filter) -> Self
+    where
+        Filter: FnMut(
+                <Codec as Decoder>::Item,
+                &mut IoWriter<Codec>,
+            ) -> Option<<Codec as Decoder>::Item>
+            + std::marker::Send
+            + 'static,
+    {
+        self.filter = Some(Box::new(filter));
+        self
+    }
+
+    pub fn with_error_handler<ErrorHandler>(mut self, handler: ErrorHandler) -> Self
+    where
+        ErrorHandler: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
+    {
+        self.error_handler = Some(Box::new(handler));
+        self
+    }
+
+    pub fn build(self) -> IoManager<Codec> {
+        IoManager::constructor(self.sink, self.stream, self.filter, self.error_handler)
+    }
+}
+
 /// A simplified interface to interact with tokio's streams and sinks.
 ///
 /// Allows easy subscription to the stream's frames, and easy sending to the sink.
@@ -84,16 +155,7 @@ where
     where
         Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
     {
-        Self::constructor(
-            sink,
-            stream,
-            None::<
-                (fn(
-                    <Codec as Decoder>::Item,
-                    &mut IoWriter<Codec>,
-                ) -> Option<<Codec as Decoder>::Item>),
-            >,
-        )
+        Self::constructor(sink, stream, None, None)
     }
 
     /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
@@ -118,13 +180,14 @@ where
             + std::marker::Send
             + 'static,
     {
-        Self::constructor(sink, stream, Some(filter))
+        Self::constructor(sink, stream, Some(Box::new(filter)), None)
     }
 
-    fn constructor<Io, F>(
+    fn constructor<Io, F, eF>(
         sink: SplitSink<Framed<Io, Codec>>,
         stream: SplitStream<Framed<Io, Codec>>,
-        mut filter: Option<F>,
+        mut filter: Option<Box<F>>,
+        error_handler: Option<Box<eF>>,
     ) -> Self
     where
         Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
@@ -134,6 +197,7 @@ where
             ) -> Option<<Codec as Decoder>::Item>
             + std::marker::Send
             + 'static,
+        eF: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
     {
         let (sink_tx, sink_rx) = channel::<<Codec as Encoder>::Item>(10);
         let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
@@ -169,7 +233,10 @@ where
                 }
                 Ok(())
             })
-            .map_err(|_| ());
+            .map_err(|e| match error_handler {
+                None => (),
+                Some(handler) => handler(e),
+            });
         tokio::spawn(stream_task);
         IoManager {
             tx: sink_tx,
