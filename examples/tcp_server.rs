@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use tokio::codec::{Decoder, Encoder};
 use tokio::net::{TcpListener, TcpStream};
 
-use tokio_simplified::{IoManager, IoManagerBuilder, IoWriter};
+use tokio_simplified::IoManagerBuilder;
 
 struct LineCodec;
 

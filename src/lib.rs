@@ -221,7 +221,7 @@ where
         sink: SplitSink<Framed<Io, Codec>>,
         stream: SplitStream<Framed<Io, Codec>>,
         mut filter: Option<F>,
-        mut error_handler: Option<EH>,
+        error_handler: Option<EH>,
     ) -> Self
     where
         Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
