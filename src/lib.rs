@@ -308,9 +308,9 @@ where
     /// `on_receive()` or `subscribe_mpsc_sender()`.
     ///
     /// Returns the `mpsc::Sender` that used to be notified upon new frames, just in case.
-    pub fn extract_callback(&self, key: u32) -> Option<Sender<<Codec as Decoder>::Item>> {
+    pub fn extract_callback(&self, key: &u32) -> Option<Sender<<Codec as Decoder>::Item>> {
         let mut map = self.subscribers.lock().unwrap();
-        map.remove(&key)
+        map.remove(key)
     }
 
     /// Returns an `IoWriter` that will forward data to the associated tokio sink.
