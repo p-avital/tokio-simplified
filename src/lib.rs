@@ -1,3 +1,4 @@
+extern crate futures_promises;
 extern crate tokio;
 
 use futures::sync::mpsc::Sender;
@@ -13,6 +14,8 @@ use tokio::{
     codec::{Decoder, Encoder, Framed},
     io::{AsyncRead, AsyncWrite},
 };
+
+use futures_promises::promises::{Promise, PromiseHandle};
 
 /// A simple interface to interact with a tokio sink.
 ///
@@ -38,16 +41,22 @@ where
 impl<Codec> IoWriter<Codec>
 where
     Codec: Encoder,
+    <Codec as tokio::codec::Encoder>::Item: std::marker::Send + 'static,
 {
     /// Forwards the frame to the tokio sink associated with the IoManager that build this instance.
-    pub fn write(
-        &mut self,
-        frame: <Codec as Encoder>::Item,
-    ) -> futures::sink::Send<futures::sync::mpsc::Sender<<Codec as Encoder>::Item>> {
-        // self.tx.start_send(frame)
-        let mut future = self.tx.clone().send(frame);
-        future.poll();
-        future
+    pub fn write(&mut self, frame: <Codec as Encoder>::Item) -> PromiseHandle<()> {
+        let promise = Promise::new();
+        let handle = promise.get_handle();
+        tokio::spawn(self.tx.clone().send(frame).then(move |result| {
+            match result {
+                Ok(_) => promise.resolve(()),
+                Err(e) => {
+                    promise.reject(format!("{}", e));
+                }
+            };
+            Ok::<(), ()>(())
+        }));
+        handle
     }
 }
 
