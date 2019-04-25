@@ -51,7 +51,39 @@ where
     }
 }
 
-pub struct IoManagerBuilder<Codec, Io>
+pub trait Filter<Codec>:
+    FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+    + std::marker::Send
+    + 'static
+where
+    Codec: Decoder,
+{
+}
+
+impl<T, Codec> Filter<Codec> for T
+where
+    T: FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+        + std::marker::Send
+        + 'static,
+    Codec: Decoder,
+{
+}
+
+pub trait ErrorHandler<Codec>:
+    FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static
+where
+    Codec: Decoder,
+{
+}
+
+impl<T, Codec> ErrorHandler<Codec> for T
+where
+    T: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
+    Codec: Decoder,
+{
+}
+
+pub struct IoManagerBuilder<Codec, Io, F, EH>
 where
     Codec: Decoder + Encoder + std::marker::Send + 'static,
     <Codec as Encoder>::Item: std::marker::Send,
@@ -59,26 +91,18 @@ where
     <Codec as Decoder>::Item: std::marker::Send + Clone,
     <Codec as Decoder>::Error: std::marker::Send,
     Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
-    // Filter:
-    //     FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
-    //         + std::marker::Send
-    //         + 'static,
-    // ErrorHandler: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
+    F: FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+        + std::marker::Send
+        + 'static,
+    EH: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
 {
     sink: SplitSink<Framed<Io, Codec>>,
     stream: SplitStream<Framed<Io, Codec>>,
-    filter: Option<
-        Box<
-            dyn FnMut(
-                <Codec as Decoder>::Item,
-                &mut IoWriter<Codec>,
-            ) -> Option<<Codec as Decoder>::Item>,
-        >,
-    >,
-    error_handler: Option<Box<dyn FnMut(<Codec as Decoder>::Error)>>,
+    filter: Option<F>,
+    error_handler: Option<EH>,
 }
 
-impl<Codec, Io> IoManagerBuilder<Codec, Io>
+impl<Codec, Io, F, EH> IoManagerBuilder<Codec, Io, F, EH>
 where
     Codec: Decoder + Encoder + std::marker::Send + 'static,
     <Codec as Encoder>::Item: std::marker::Send,
@@ -86,6 +110,8 @@ where
     <Codec as Decoder>::Item: std::marker::Send + Clone,
     <Codec as Decoder>::Error: std::marker::Send,
     Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
+    F: Filter<Codec>,
+    EH: ErrorHandler<Codec>,
 {
     pub fn new(sink: SplitSink<Framed<Io, Codec>>, stream: SplitStream<Framed<Io, Codec>>) -> Self {
         Self {
@@ -96,24 +122,13 @@ where
         }
     }
 
-    pub fn with_filter<Filter>(mut self, filter: Filter) -> Self
-    where
-        Filter: FnMut(
-                <Codec as Decoder>::Item,
-                &mut IoWriter<Codec>,
-            ) -> Option<<Codec as Decoder>::Item>
-            + std::marker::Send
-            + 'static,
-    {
-        self.filter = Some(Box::new(filter));
+    pub fn with_filter(mut self, filter: F) -> Self {
+        self.filter = Some(filter);
         self
     }
 
-    pub fn with_error_handler<ErrorHandler>(mut self, handler: ErrorHandler) -> Self
-    where
-        ErrorHandler: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
-    {
-        self.error_handler = Some(Box::new(handler));
+    pub fn with_error_handler(mut self, handler: EH) -> Self {
+        self.error_handler = Some(handler);
         self
     }
 
@@ -155,7 +170,17 @@ where
     where
         Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
     {
-        Self::constructor(sink, stream, None, None)
+        Self::constructor(
+            sink,
+            stream,
+            None::<
+                (fn(
+                    <Codec as Decoder>::Item,
+                    &mut IoWriter<Codec>,
+                ) -> Option<<Codec as Decoder>::Item>),
+            >,
+            None::<fn(<Codec as Decoder>::Error)>,
+        )
     }
 
     /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
@@ -173,31 +198,26 @@ where
     ) -> Self
     where
         Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: FnMut(
-                <Codec as Decoder>::Item,
-                &mut IoWriter<Codec>,
-            ) -> Option<<Codec as Decoder>::Item>
-            + std::marker::Send
-            + 'static,
+        F: Filter<Codec>,
     {
-        Self::constructor(sink, stream, Some(Box::new(filter)), None)
+        Self::constructor(
+            sink,
+            stream,
+            Some(filter),
+            None::<fn(<Codec as Decoder>::Error)>,
+        )
     }
 
-    fn constructor<Io, F, eF>(
+    pub fn constructor<Io, F, EH>(
         sink: SplitSink<Framed<Io, Codec>>,
         stream: SplitStream<Framed<Io, Codec>>,
-        mut filter: Option<Box<F>>,
-        error_handler: Option<Box<eF>>,
+        mut filter: Option<F>,
+        mut error_handler: Option<EH>,
     ) -> Self
     where
         Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: FnMut(
-                <Codec as Decoder>::Item,
-                &mut IoWriter<Codec>,
-            ) -> Option<<Codec as Decoder>::Item>
-            + std::marker::Send
-            + 'static,
-        eF: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
+        F: Filter<Codec>,
+        EH: ErrorHandler<Codec>,
     {
         let (sink_tx, sink_rx) = channel::<<Codec as Encoder>::Item>(10);
         let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
@@ -235,7 +255,7 @@ where
             })
             .map_err(|e| match error_handler {
                 None => (),
-                Some(handler) => handler(e),
+                Some(mut handler) => handler(e),
             });
         tokio::spawn(stream_task);
         IoManager {

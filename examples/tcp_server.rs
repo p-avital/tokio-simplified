@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use tokio::codec::{Decoder, Encoder};
 use tokio::net::{TcpListener, TcpStream};
 
-use tokio_simplified::IoManager;
+use tokio_simplified::{IoManager, IoManagerBuilder, IoWriter};
 
 struct LineCodec;
 
@@ -28,6 +28,13 @@ impl Decoder for LineCodec {
             }
         })
     }
+
+    fn decode_eof(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if src.len() > 0 {
+            return Ok(Some(String::from_utf8(src.to_vec()).unwrap()));
+        }
+        Err(std::io::Error::from(std::io::ErrorKind::ConnectionAborted))
+    }
 }
 
 impl Encoder for LineCodec {
@@ -36,7 +43,7 @@ impl Encoder for LineCodec {
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         dst.extend(item.as_bytes());
-        dst.extend(b"\n");
+        dst.extend(b"\r\n");
         Ok(())
     }
 }
@@ -44,13 +51,18 @@ impl Encoder for LineCodec {
 fn process_socket(socket: TcpStream) {
     println!("New Client");
     let (sink, stream) = LineCodec.framed(socket).split();
-    let trx = IoManager::with_filter(sink, stream, |frame, writer| {
-        if frame.to_lowercase().contains("hello there") {
-            writer.write("General Kenobi!".into());
-            return None;
-        }
-        Some(frame)
-    });
+    let trx = IoManagerBuilder::new(sink, stream)
+        .with_filter(|frame, writer| {
+            if frame.to_lowercase().contains("hello there") {
+                writer.write("General Kenobi!".into());
+                return None;
+            }
+            Some(frame)
+        })
+        .with_error_handler(move |error| {
+            println!("{}", error);
+        })
+        .build();
 
     let mut writer = trx.get_writer();
     trx.on_receive(move |frame| {
