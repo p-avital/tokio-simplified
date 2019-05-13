@@ -2,35 +2,20 @@ extern crate futures_promises;
 extern crate tokio;
 
 use futures::sync::mpsc::Sender;
-use futures::{
-    future::Future,
-    sink::Sink,
-    stream::{SplitSink, SplitStream, Stream},
-    sync::mpsc::channel,
-};
+use futures::{future::Future, sink::Sink, stream::Stream, sync::mpsc::channel};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::{
-    codec::{Decoder, Encoder, Framed},
-    io::{AsyncRead, AsyncWrite},
-};
 
 use futures_promises::promises::{Promise, PromiseHandle};
 
 /// A simple interface to interact with a tokio sink.
 ///
 /// Should always be constructed by a call to some IoManager's get_writer().
-pub struct IoWriter<Codec>
-where
-    Codec: Encoder,
-{
-    tx: futures::sync::mpsc::Sender<<Codec as Encoder>::Item>,
+pub struct IoWriter<SendType> {
+    tx: futures::sync::mpsc::Sender<SendType>,
 }
 
-impl<Codec> Clone for IoWriter<Codec>
-where
-    Codec: Encoder,
-{
+impl<SendType> Clone for IoWriter<SendType> {
     fn clone(&self) -> Self {
         IoWriter {
             tx: self.tx.clone(),
@@ -38,13 +23,22 @@ where
     }
 }
 
-impl<Codec> IoWriter<Codec>
+impl<SendType> IoWriter<SendType>
 where
-    Codec: Encoder,
-    <Codec as tokio::codec::Encoder>::Item: std::marker::Send + 'static,
+    SendType: std::marker::Send + 'static,
 {
+    pub fn new<SinkType>(sink: SinkType) -> Self
+    where
+        SinkType: Sink<SinkItem = SendType> + Send + 'static,
+    {
+        let (tx, sink_rx) = channel::<<SinkType as Sink>::SinkItem>(10);
+        let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
+        tokio::spawn(sink_task);
+        IoWriter { tx }
+    }
+
     /// Forwards the frame to the tokio sink associated with the IoManager that build this instance.
-    pub fn write(&mut self, frame: <Codec as Encoder>::Item) -> PromiseHandle<()> {
+    pub fn write(&mut self, frame: SendType) -> PromiseHandle<()> {
         let promise = Promise::new();
         let handle = promise.get_handle();
         tokio::spawn(self.tx.clone().send(frame).then(move |result| {
@@ -60,69 +54,56 @@ where
     }
 }
 
-pub trait Filter<Codec>:
-    FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
-    + std::marker::Send
-    + 'static
-where
-    Codec: Decoder,
+pub trait Filter<SendType, ReceiveType>:
+    FnMut(ReceiveType, &mut IoWriter<SendType>) -> Option<ReceiveType> + std::marker::Send + 'static
 {
 }
 
-impl<T, Codec> Filter<Codec> for T
+impl<T, SendType, ReceiveType> Filter<SendType, ReceiveType> for T where
+    T: FnMut(ReceiveType, &mut IoWriter<SendType>) -> Option<ReceiveType>
+        + std::marker::Send
+        + 'static
+{
+}
+
+pub trait ErrorHandler<ErrorType>: FnMut(ErrorType) + std::marker::Send + 'static {}
+
+impl<T, ErrorType> ErrorHandler<ErrorType> for T where
+    T: FnMut(ErrorType) + std::marker::Send + 'static
+{
+}
+
+/// A builder for `IoManager`, and the only way to build one since the constructors have been deleted.
+pub struct IoManagerBuilder<SinkType, StreamType, F, EH>
 where
-    T: FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
+    SinkType: Sink,
+    StreamType: Stream,
+    F: FnMut(
+            <StreamType as Stream>::Item,
+            &mut IoWriter<<SinkType as Sink>::SinkItem>,
+        ) -> Option<<StreamType as Stream>::Item>
         + std::marker::Send
         + 'static,
-    Codec: Decoder,
+    EH: FnMut(<StreamType as Stream>::Error) + std::marker::Send + 'static,
 {
-}
-
-pub trait ErrorHandler<Codec>:
-    FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static
-where
-    Codec: Decoder,
-{
-}
-
-impl<T, Codec> ErrorHandler<Codec> for T
-where
-    T: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
-    Codec: Decoder,
-{
-}
-
-pub struct IoManagerBuilder<Codec, Io, F, EH>
-where
-    Codec: Decoder + Encoder + std::marker::Send + 'static,
-    <Codec as Encoder>::Item: std::marker::Send,
-    <Codec as Encoder>::Error: std::marker::Send,
-    <Codec as Decoder>::Item: std::marker::Send + Clone,
-    <Codec as Decoder>::Error: std::marker::Send,
-    Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
-    F: FnMut(<Codec as Decoder>::Item, &mut IoWriter<Codec>) -> Option<<Codec as Decoder>::Item>
-        + std::marker::Send
-        + 'static,
-    EH: FnMut(<Codec as Decoder>::Error) + std::marker::Send + 'static,
-{
-    sink: SplitSink<Framed<Io, Codec>>,
-    stream: SplitStream<Framed<Io, Codec>>,
+    sink: SinkType,
+    stream: StreamType,
     filter: Option<F>,
     error_handler: Option<EH>,
 }
 
-impl<Codec, Io, F, EH> IoManagerBuilder<Codec, Io, F, EH>
+impl<SinkType, StreamType, F, EH> IoManagerBuilder<SinkType, StreamType, F, EH>
 where
-    Codec: Decoder + Encoder + std::marker::Send + 'static,
-    <Codec as Encoder>::Item: std::marker::Send,
-    <Codec as Encoder>::Error: std::marker::Send,
-    <Codec as Decoder>::Item: std::marker::Send + Clone,
-    <Codec as Decoder>::Error: std::marker::Send,
-    Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
-    F: Filter<Codec>,
-    EH: ErrorHandler<Codec>,
+    SinkType: Sink + Send + 'static,
+    StreamType: Stream + Send + 'static,
+    <StreamType as Stream>::Item: Send + Clone + 'static,
+    <StreamType as Stream>::Error: Send,
+    <SinkType as Sink>::SinkItem: Send + 'static,
+    F: Filter<<SinkType as Sink>::SinkItem, <StreamType as Stream>::Item>,
+    EH: ErrorHandler<<StreamType as Stream>::Error>,
 {
-    pub fn new(sink: SplitSink<Framed<Io, Codec>>, stream: SplitStream<Framed<Io, Codec>>) -> Self {
+    /// Creates a builder for `IoManager`.
+    pub fn new(sink: SinkType, stream: StreamType) -> Self {
         Self {
             sink,
             stream,
@@ -131,104 +112,70 @@ where
         }
     }
 
+    /// Adds a filter to the `IoManager` builder.
+    /// Filters are static in this library. If you need to be able to change the filter without
+    /// droping the sink and steram passed to this instance, you should probably use Box to encapsulate your filter,
+    /// and then whatever you need to make it all thread safe for when you'll need to modify it.
+    /// Type inference should still work, which is nice.
     pub fn with_filter(mut self, filter: F) -> Self {
         self.filter = Some(filter);
         self
     }
 
+    /// Similar to `with_filter`, only for error handling.
+    /// Tip: if you want to be able to catch end of streams with this API,
+    /// you may want your Codec to implement `decode_eof()` and throw an error at the last moment,
+    /// such as this:
+    /// ```rust
+    /// fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    ///     let decode = self.decode(buf);
+    ///     match decode {
+    ///         Ok(None) => Err(std::io::Error::from(std::io::ErrorKind::ConnectionAborted)),
+    ///         _ => decode,
+    ///     }
+    /// }
+    /// ```
     pub fn with_error_handler(mut self, handler: EH) -> Self {
         self.error_handler = Some(handler);
         self
     }
 
-    pub fn build(self) -> IoManager<Codec> {
-        IoManager::constructor(self.sink, self.stream, self.filter, self.error_handler)
+    pub fn build(self) -> IoManager<SinkType::SinkItem, StreamType::Item> {
+        IoManager::<SinkType::SinkItem, StreamType::Item>::constructor(
+            self.sink,
+            self.stream,
+            self.filter,
+            self.error_handler,
+        )
     }
 }
 
 /// A simplified interface to interact with tokio's streams and sinks.
 ///
 /// Allows easy subscription to the stream's frames, and easy sending to the sink.
-pub struct IoManager<Codec>
-where
-    Codec: Encoder + Decoder,
-{
-    tx: futures::sync::mpsc::Sender<<Codec as Encoder>::Item>,
-    subscribers: Arc<Mutex<HashMap<u32, futures::sync::mpsc::Sender<<Codec as Decoder>::Item>>>>,
+pub struct IoManager<SendType, ReceiveType> {
+    tx: futures::sync::mpsc::Sender<SendType>,
+    subscribers: Arc<Mutex<HashMap<u32, futures::sync::mpsc::Sender<ReceiveType>>>>,
     next_handle: Mutex<u32>,
 }
 
-impl<Codec> IoManager<Codec>
-where
-    Codec: Decoder + Encoder + std::marker::Send + 'static,
-    <Codec as Encoder>::Item: std::marker::Send,
-    <Codec as Encoder>::Error: std::marker::Send,
-    <Codec as Decoder>::Item: std::marker::Send + Clone,
-    <Codec as Decoder>::Error: std::marker::Send,
-{
-    /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
-    ///
-    /// Builds a new `IoManager` from the provided `sink` and `stream` with no filter.
-    ///
-    /// You can provide a filter to run on each `frame` before sending said frames to callbacks.
-    /// To provide a filter, use `with_filter(sink, stream, callback)`.
-    pub fn new<Io>(
-        sink: SplitSink<Framed<Io, Codec>>,
-        stream: SplitStream<Framed<Io, Codec>>,
-    ) -> Self
-    where
-        Io: AsyncRead + AsyncWrite + std::marker::Send + 'static,
-    {
-        Self::constructor(
-            sink,
-            stream,
-            None::<
-                (fn(
-                    <Codec as Decoder>::Item,
-                    &mut IoWriter<Codec>,
-                ) -> Option<<Codec as Decoder>::Item>),
-            >,
-            None::<fn(<Codec as Decoder>::Error)>,
-        )
-    }
-
-    /// SHOULD ALWAYS BE CALLED FROM INSIDE A TOKIO RUNTIME!
-    ///
-    /// Builds a new IoManager from the provided sink and stream.
-    /// You can provide a filter to run on each frame before sending said frames to callbacks.
-    ///
-    /// Callbacks will not be called if the filter returned None, so if you intend on only having a single callback,
-    /// using `filter=callback` with a callback that always returns `None` will save you the cost of the multiple
-    /// callbacks handling provided by the `subscibe(callback)` API
-    pub fn with_filter<Io, F>(
-        sink: SplitSink<Framed<Io, Codec>>,
-        stream: SplitStream<Framed<Io, Codec>>,
-        filter: F,
-    ) -> Self
-    where
-        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: Filter<Codec>,
-    {
-        Self::constructor(
-            sink,
-            stream,
-            Some(filter),
-            None::<fn(<Codec as Decoder>::Error)>,
-        )
-    }
-
-    pub fn constructor<Io, F, EH>(
-        sink: SplitSink<Framed<Io, Codec>>,
-        stream: SplitStream<Framed<Io, Codec>>,
+impl<SendType, ReceiveType> IoManager<SendType, ReceiveType> {
+    fn constructor<SinkType, StreamType, F, EH>(
+        sink: SinkType,
+        stream: StreamType,
         mut filter: Option<F>,
         error_handler: Option<EH>,
-    ) -> Self
+    ) -> IoManager<SinkType::SinkItem, StreamType::Item>
     where
-        Io: AsyncWrite + AsyncRead + std::marker::Send + 'static,
-        F: Filter<Codec>,
-        EH: ErrorHandler<Codec>,
+        SinkType: Sink + Send + 'static,
+        StreamType: Stream + Send + 'static,
+        <StreamType as Stream>::Item: Send + Clone + 'static,
+        <StreamType as Stream>::Error: Send,
+        <SinkType as Sink>::SinkItem: Send + 'static,
+        F: Filter<SinkType::SinkItem, StreamType::Item>,
+        EH: ErrorHandler<StreamType::Error>,
     {
-        let (sink_tx, sink_rx) = channel::<<Codec as Encoder>::Item>(10);
+        let (sink_tx, sink_rx) = channel::<<SinkType as Sink>::SinkItem>(10);
         let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
         tokio::spawn(sink_task);
         let mut filter_writer = IoWriter {
@@ -237,11 +184,11 @@ where
 
         let subscribers = Arc::new(Mutex::new(HashMap::<
             u32,
-            futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
+            futures::sync::mpsc::Sender<<StreamType as Stream>::Item>,
         >::new()));
         let stream_subscribers_reference = subscribers.clone();
         let stream_task = stream
-            .for_each(move |frame: <Codec as Decoder>::Item| {
+            .for_each(move |frame| {
                 let frame = match &mut filter {
                     None => Some(frame),
                     Some(function) => function(frame, &mut filter_writer),
@@ -274,12 +221,10 @@ where
         }
     }
 
-    /// deprecated: use `on_receive()` instead, unless you NEED an `mpsc::Sender` to be notified.
-    ///
     /// `subscriber` will receive any data polled from the internal stream.
     pub fn subscribe_mpsc_sender(
         &self,
-        subscriber: futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
+        subscriber: futures::sync::mpsc::Sender<ReceiveType>,
     ) -> u32 {
         let mut map = self.subscribers.lock().unwrap();
         let mut handle_guard = self.next_handle.lock().unwrap();
@@ -292,13 +237,10 @@ where
     /// `callback` will be called for each `frame` polled from the internal stream.
     pub fn on_receive<F>(&self, callback: F) -> u32
     where
-        F: FnMut(<Codec as Decoder>::Item) -> Result<(), ()> + std::marker::Send + 'static,
-        <Codec as Decoder>::Item: std::marker::Send + 'static,
+        F: FnMut(ReceiveType) -> Result<(), ()> + std::marker::Send + 'static,
+        ReceiveType: std::marker::Send + 'static,
     {
-        let (tx, rx): (
-            futures::sync::mpsc::Sender<<Codec as Decoder>::Item>,
-            futures::sync::mpsc::Receiver<<Codec as Decoder>::Item>,
-        ) = channel::<<Codec as Decoder>::Item>(10);
+        let (tx, rx) = channel::<ReceiveType>(10);
         let on_frame = rx.for_each(callback).map(|_| ());
         tokio::spawn(on_frame);
         self.subscribe_mpsc_sender(tx)
@@ -308,13 +250,13 @@ where
     /// `on_receive()` or `subscribe_mpsc_sender()`.
     ///
     /// Returns the `mpsc::Sender` that used to be notified upon new frames, just in case.
-    pub fn extract_callback(&self, key: &u32) -> Option<Sender<<Codec as Decoder>::Item>> {
+    pub fn extract_callback(&self, key: &u32) -> Option<Sender<ReceiveType>> {
         let mut map = self.subscribers.lock().unwrap();
         map.remove(key)
     }
 
     /// Returns an `IoWriter` that will forward data to the associated tokio sink.
-    pub fn get_writer(&self) -> IoWriter<Codec> {
+    pub fn get_writer(&self) -> IoWriter<SendType> {
         IoWriter {
             tx: self.tx.clone(),
         }
@@ -323,12 +265,6 @@ where
 
 /// Inspired by bkwilliams, these aliases will probably stay, but you shouldn't rely too much on them
 pub mod silly_aliases {
-    pub type DoWhenever<T> = crate::IoManager<T>;
+    pub type DoWhenever<T, U> = crate::IoManager<T, U>;
     pub type PushWhenever<T> = crate::IoWriter<T>;
-}
-
-/// DEPRECATED: These aliases will be discarded whenever an actual API change happens
-pub mod legacy_aliases {
-    pub type AsyncReadWriter<T> = crate::IoManager<T>;
-    pub type AsyncWriter<T> = crate::IoWriter<T>;
 }

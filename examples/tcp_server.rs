@@ -63,7 +63,6 @@ fn process_socket(socket: TcpStream) {
             println!("{}", error);
         })
         .build();
-
     let mut writer = trx.get_writer();
     trx.on_receive(move |frame| {
         println!("Got frame: {}", frame);
