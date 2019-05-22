@@ -74,52 +74,94 @@ impl<T, ErrorType> ErrorHandler<ErrorType> for T where
 }
 
 /// A builder for `IoManager`, and the only way to build one since the constructors have been deleted.
-pub struct IoManagerBuilder<SinkType, StreamType, F, EH>
-where
+pub struct IoManagerBuilder<
+    SinkType,
+    StreamType,
+    BF = (fn(
+        <StreamType as Stream>::Item,
+        &mut IoWriter<<SinkType as Sink>::SinkItem>,
+    ) -> Option<<StreamType as Stream>::Item>),
+    BEH = (fn(<StreamType as Stream>::Error)),
+> where
     SinkType: Sink,
     StreamType: Stream,
-    F: FnMut(
+    BF: FnMut(
             <StreamType as Stream>::Item,
             &mut IoWriter<<SinkType as Sink>::SinkItem>,
         ) -> Option<<StreamType as Stream>::Item>
         + std::marker::Send
         + 'static,
-    EH: FnMut(<StreamType as Stream>::Error) + std::marker::Send + 'static,
+    BEH: FnMut(<StreamType as Stream>::Error) + std::marker::Send + 'static,
 {
     sink: SinkType,
     stream: StreamType,
-    filter: Option<F>,
-    error_handler: Option<EH>,
+    filter: Option<BF>,
+    error_handler: Option<BEH>,
 }
 
-impl<SinkType, StreamType, F, EH> IoManagerBuilder<SinkType, StreamType, F, EH>
+type DefaultFilterType<SinkType, StreamType> = (fn(
+    <StreamType as Stream>::Item,
+    &mut IoWriter<<SinkType as Sink>::SinkItem>,
+) -> Option<<StreamType as Stream>::Item>);
+type DefaultErrorHandlerType<StreamType> = (fn(<StreamType as Stream>::Error));
+
+impl<SinkType, StreamType> IoManagerBuilder<SinkType, StreamType>
 where
     SinkType: Sink + Send + 'static,
     StreamType: Stream + Send + 'static,
     <StreamType as Stream>::Item: Send + Clone + 'static,
     <StreamType as Stream>::Error: Send,
     <SinkType as Sink>::SinkItem: Send + 'static,
-    F: Filter<<SinkType as Sink>::SinkItem, <StreamType as Stream>::Item>,
-    EH: ErrorHandler<<StreamType as Stream>::Error>,
 {
+
     /// Creates a builder for `IoManager`.
-    pub fn new(sink: SinkType, stream: StreamType) -> Self {
-        Self {
+    pub fn new(
+        sink: SinkType,
+        stream: StreamType,
+    ) -> IoManagerBuilder<
+        SinkType,
+        StreamType,
+        DefaultFilterType<SinkType, StreamType>,
+        DefaultErrorHandlerType<StreamType>,
+    > {
+        IoManagerBuilder {
             sink,
             stream,
             filter: None,
             error_handler: None,
         }
     }
+}
 
+impl<SinkType, StreamType, FilterType, ErrorHandlerType>
+    IoManagerBuilder<SinkType, StreamType, FilterType, ErrorHandlerType>
+where
+    SinkType: Sink + Send + 'static,
+    StreamType: Stream + Send + 'static,
+    <StreamType as Stream>::Item: Send + Clone + 'static,
+    <StreamType as Stream>::Error: Send,
+    <SinkType as Sink>::SinkItem: Send + 'static,
+    FilterType: Filter<<SinkType as Sink>::SinkItem, <StreamType as Stream>::Item>,
+    ErrorHandlerType: ErrorHandler<<StreamType as Stream>::Error>,
+{
     /// Adds a filter to the `IoManager` builder.
     /// Filters are static in this library. If you need to be able to change the filter without
     /// droping the sink and steram passed to this instance, you should probably use Box to encapsulate your filter,
     /// and then whatever you need to make it all thread safe for when you'll need to modify it.
     /// Type inference should still work, which is nice.
-    pub fn with_filter(mut self, filter: F) -> Self {
-        self.filter = Some(filter);
-        self
+    pub fn with_filter<NewFilterType>(
+        self,
+        filter: NewFilterType,
+    ) -> IoManagerBuilder<SinkType, StreamType, NewFilterType, ErrorHandlerType>
+    where
+        NewFilterType: Filter<<SinkType as Sink>::SinkItem, <StreamType as Stream>::Item>,
+    {
+        IoManagerBuilder {
+            sink: self.sink,
+            stream: self.stream,
+            filter: Some(filter),
+            error_handler: self.error_handler,
+        }
     }
 
     /// Similar to `with_filter`, only for error handling.
@@ -135,9 +177,19 @@ where
     ///     }
     /// }
     /// ```
-    pub fn with_error_handler(mut self, handler: EH) -> Self {
-        self.error_handler = Some(handler);
-        self
+    pub fn with_error_handler<NewErrorHandlerType>(
+        self,
+        handler: NewErrorHandlerType,
+    ) -> IoManagerBuilder<SinkType, StreamType, FilterType, NewErrorHandlerType>
+    where
+        NewErrorHandlerType: ErrorHandler<<StreamType as Stream>::Error>,
+    {
+        IoManagerBuilder {
+            sink: self.sink,
+            stream: self.stream,
+            filter: self.filter,
+            error_handler: Some(handler),
+        }
     }
 
     pub fn build(self) -> IoManager<SinkType::SinkItem, StreamType::Item> {
