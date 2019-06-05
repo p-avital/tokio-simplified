@@ -54,7 +54,7 @@ fn process_socket(socket: TcpStream) {
     let trx = IoManagerBuilder::new(sink, stream)
         .with_filter(|frame, writer| {
             if frame.to_lowercase().contains("hello there") {
-                writer.write("General Kenobi!".into());
+                writer.write("General Kenobi!".to_string());
                 return None;
             }
             Some(frame)
@@ -66,7 +66,7 @@ fn process_socket(socket: TcpStream) {
     let mut writer = trx.get_writer();
     trx.on_receive(move |frame| {
         println!("Got frame: {}", frame);
-        writer.write("Hi there".into());
+        writer.write("Hi there".to_string());
         Ok(())
     });
 }

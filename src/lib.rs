@@ -38,10 +38,10 @@ where
     }
 
     /// Forwards the frame to the tokio sink associated with the IoManager that build this instance.
-    pub fn write(&mut self, frame: SendType) -> PromiseHandle<()> {
+    pub fn write<T: Into<SendType>>(&mut self, frame: T) -> PromiseHandle<()> {
         let promise = Promise::new();
         let handle = promise.get_handle();
-        tokio::spawn(self.tx.clone().send(frame).then(move |result| {
+        tokio::spawn(self.tx.clone().send(frame.into()).then(move |result| {
             match result {
                 Ok(_) => promise.resolve(()),
                 Err(e) => {
@@ -113,7 +113,6 @@ where
     <StreamType as Stream>::Error: Send,
     <SinkType as Sink>::SinkItem: Send + 'static,
 {
-
     /// Creates a builder for `IoManager`.
     pub fn new(
         sink: SinkType,
@@ -205,10 +204,11 @@ where
 /// A simplified interface to interact with tokio's streams and sinks.
 ///
 /// Allows easy subscription to the stream's frames, and easy sending to the sink.
-pub struct IoManager<SendType, ReceiveType> {
+#[derive(Clone)]
+pub struct IoManager<SendType, ReceiveType = SendType> {
     tx: futures::sync::mpsc::Sender<SendType>,
     subscribers: Arc<Mutex<HashMap<u32, futures::sync::mpsc::Sender<ReceiveType>>>>,
-    next_handle: Mutex<u32>,
+    next_handle: Arc<Mutex<u32>>,
 }
 
 impl<SendType, ReceiveType> IoManager<SendType, ReceiveType> {
@@ -269,7 +269,7 @@ impl<SendType, ReceiveType> IoManager<SendType, ReceiveType> {
         IoManager {
             tx: sink_tx,
             subscribers,
-            next_handle: Mutex::new(0),
+            next_handle: Arc::new(Mutex::new(0)),
         }
     }
 
