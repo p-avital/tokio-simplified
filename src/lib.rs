@@ -8,6 +8,13 @@ use std::sync::{Arc, Mutex};
 
 use futures_promises::promises::{Promise, PromiseHandle};
 
+#[cfg(not(any(feature = "big_channels", feature = "very_big_channels")))]
+const CHANNEL_SIZE: usize = 16;
+#[cfg(all(feature = "big_channels", not(feature = "very_big_channels")))]
+const CHANNEL_SIZE: usize = 64;
+#[cfg(feature = "very_big_channels")]
+const CHANNEL_SIZE: usize = 256;
+
 /// A simple interface to interact with a tokio sink.
 ///
 /// Should always be constructed by a call to some IoManager's get_writer().
@@ -31,7 +38,7 @@ where
     where
         SinkType: Sink<SinkItem = SendType> + Send + 'static,
     {
-        let (tx, sink_rx) = channel::<<SinkType as Sink>::SinkItem>(10);
+        let (tx, sink_rx) = channel::<<SinkType as Sink>::SinkItem>(CHANNEL_SIZE);
         let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
         tokio::spawn(sink_task);
         IoWriter { tx }
@@ -227,7 +234,7 @@ impl<SendType, ReceiveType> IoManager<SendType, ReceiveType> {
         F: Filter<SinkType::SinkItem, StreamType::Item>,
         EH: ErrorHandler<StreamType::Error>,
     {
-        let (sink_tx, sink_rx) = channel::<<SinkType as Sink>::SinkItem>(10);
+        let (sink_tx, sink_rx) = channel::<<SinkType as Sink>::SinkItem>(CHANNEL_SIZE);
         let sink_task = sink_rx.forward(sink.sink_map_err(|_| ())).map(|_| ());
         tokio::spawn(sink_task);
         let mut filter_writer = IoWriter {
@@ -292,7 +299,7 @@ impl<SendType, ReceiveType> IoManager<SendType, ReceiveType> {
         F: FnMut(ReceiveType) -> Result<(), ()> + std::marker::Send + 'static,
         ReceiveType: std::marker::Send + 'static,
     {
-        let (tx, rx) = channel::<ReceiveType>(10);
+        let (tx, rx) = channel::<ReceiveType>(CHANNEL_SIZE);
         let on_frame = rx.for_each(callback).map(|_| ());
         tokio::spawn(on_frame);
         self.subscribe_mpsc_sender(tx)
