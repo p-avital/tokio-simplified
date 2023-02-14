@@ -1,3 +1,9 @@
+# Archival notice
+
+I wrote this in a time before `async` syntax became stable. Ever since it has, this library has become completely obsolete. 
+
+Please don't even try using it.
+
 # A Simplified API to work with Tokio's SplitSink and SplitStream
 
 ## Motivation
